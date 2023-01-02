@@ -450,7 +450,7 @@ bool NavSatTransform::fromLLCallback(
 
   cartesian_pose.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, altitude));
 
-  nav_msgs::msg::Odometry gps_odom;
+  //nav_msgs::msg::Odometry gps_odom;
 
   if (!transform_good_) {
     return false;
@@ -625,14 +625,26 @@ void NavSatTransform::gpsFixCallback(
 
     double cartesian_x = 0;
     double cartesian_y = 0;
-    std::string cartesian_zone_tmp;
-    navsat_conversions::LLtoUTM(
-      msg->latitude,
-      msg->longitude,
-      cartesian_y,
-      cartesian_x,
-      cartesian_zone_tmp);
-    latest_cartesian_pose_.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, msg->altitude));
+    double cartesian_z = msg->altitude;
+
+    if (use_local_cartesian_) {
+      gps_local_cartesian_.Forward(
+        msg->latitude,
+        msg->longitude,
+        msg->altitude,
+        cartesian_x,
+        cartesian_y,
+        cartesian_z);
+    } else {
+      std::string cartesian_zone_tmp;
+      navsat_conversions::LLtoUTM(
+        msg->latitude,
+        msg->longitude,
+        cartesian_y,
+        cartesian_x,
+        cartesian_zone_tmp);
+    }
+    latest_cartesian_pose_.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, cartesian_z));
     latest_cartesian_covariance_.setZero();
 
     // Copy the measurement's covariance matrix so that we can rotate it later
