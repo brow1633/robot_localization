@@ -450,7 +450,7 @@ bool NavSatTransform::fromLLCallback(
 
   cartesian_pose.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, altitude));
 
-  //nav_msgs::msg::Odometry gps_odom;
+  // nav_msgs::msg::Odometry gps_odom;
 
   if (!transform_good_) {
     return false;
@@ -678,6 +678,10 @@ void NavSatTransform::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
       msg->header.stamp, transform_timeout_, target_frame_trans);
 
     if (can_transform) {
+      tf2::Quaternion q = target_frame_trans.getRotation();
+      transform_orientation_ = (q * transform_orientation_).normalize();
+
+      /*
       double roll_offset = 0;
       double pitch_offset = 0;
       double yaw_offset = 0;
@@ -705,6 +709,7 @@ void NavSatTransform::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
       transform_orientation_.setRPY(
         rpy_angles.getX(), rpy_angles.getY(),
         rpy_angles.getZ());
+      */
 
       has_transform_imu_ = true;
     }

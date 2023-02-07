@@ -40,4 +40,4 @@ branches:
     - ros2
 
 notifications:
-email: false
+  email: false

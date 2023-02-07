@@ -79,8 +79,13 @@ RosRobotLocalizationListener::RosRobotLocalizationListener(
   rclcpp::SubscriptionOptions options)
 : qos1_(1),
   qos10_(10),
+<<<<<<< HEAD
   odom_sub_(node, "odom/filtered", qos1_.get_rmw_qos_profile(), options),
   accel_sub_(node, "acceleration/filtered", qos1_.get_rmw_qos_profile(), options),
+=======
+  odom_sub_(node, "odom/filtered", qos1_.get_rmw_qos_profile()),  //, options),
+  accel_sub_(node, "acceleration/filtered", qos1_.get_rmw_qos_profile()),  //, options),
+>>>>>>> 6b876c2 (NavSat initial IMU transformation uses quat rotate. Performed unit testing.)
   sync_(odom_sub_, accel_sub_, 10u),
   node_clock_(node->get_node_clock_interface()->get_clock()),
   node_logger_(node->get_node_logging_interface()),
