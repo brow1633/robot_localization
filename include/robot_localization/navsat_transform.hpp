@@ -375,6 +375,10 @@ private:
    */
   bool use_manual_datum_;
 
+  bool manual_datum_set_;
+
+  robot_localization::srv::SetDatum::Request::SharedPtr manual_datum_req_;
+
   /**
    * @brief Whether we get the transform's yaw from the odometry or IMU source
    */

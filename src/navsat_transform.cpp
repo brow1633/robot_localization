@@ -81,6 +81,7 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   transform_timeout_(0ns),
   use_local_cartesian_(false),
   use_manual_datum_(false),
+  manual_datum_set_(false),
   use_odometry_yaw_(false),
   cartesian_broadcaster_(*this),
   utm_meridian_convergence_(0.0),
@@ -149,29 +150,43 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   from_ll_srv_ = this->create_service<robot_localization::srv::FromLL>(
     "fromLL", std::bind(&NavSatTransform::fromLLCallback, this, _1, _2));
 
-  std::vector<double> datum_vals;
   if (use_manual_datum_) {
+    std::vector<double> datum_vals;
     datum_vals = this->declare_parameter("datum", datum_vals);
+    bool manual_datum_at_sea_level = true;
+    manual_datum_at_sea_level =
+      this->declare_parameter("datum_at_sea_level", manual_datum_at_sea_level);
 
     double datum_lat = 0.0;
     double datum_lon = 0.0;
     double datum_yaw = 0.0;
 
-    if (datum_vals.size() == 3) {
+    if (datum_vals.size() >= 2) {
       datum_lat = datum_vals[0];
       datum_lon = datum_vals[1];
-      datum_yaw = datum_vals[2];
+      if (datum_vals.size() == 3)
+        datum_yaw = datum_vals[2];
+      else if (datum_vals.size() == 4)
+        datum_yaw = datum_vals[3];
     }
 
-    auto request = std::make_shared<robot_localization::srv::SetDatum::Request>();
-    request->geo_pose.position.latitude = datum_lat;
-    request->geo_pose.position.longitude = datum_lon;
-    request->geo_pose.position.altitude = 0.0;
+    manual_datum_req_ = std::make_shared<robot_localization::srv::SetDatum::Request>();
+    manual_datum_req_->geo_pose.position.latitude = datum_lat;
+    manual_datum_req_->geo_pose.position.longitude = datum_lon;
     tf2::Quaternion quat;
     quat.setRPY(0.0, 0.0, datum_yaw);
-    request->geo_pose.orientation = tf2::toMsg(quat);
-    auto response = std::make_shared<robot_localization::srv::SetDatum::Response>();
-    datumCallback(request, response);
+    manual_datum_req_->geo_pose.orientation = tf2::toMsg(quat);
+    if (manual_datum_at_sea_level) {
+      manual_datum_req_->geo_pose.position.altitude = 0.0;
+      auto response = std::make_shared<robot_localization::srv::SetDatum::Response>();
+      datumCallback(manual_datum_req_, response);
+    } else if (datum_vals.size() == 4) {
+      manual_datum_req_->geo_pose.position.altitude = datum_vals[2];
+      auto response = std::make_shared<robot_localization::srv::SetDatum::Response>();
+      datumCallback(manual_datum_req_, response);
+    }
+    // else: datum altitude is not sea level and not provided.
+    // Hold back the datum callback, until the first valid GPS fix arrived for the altitude.
   }
 
   auto custom_qos = rclcpp::SensorDataQoS(rclcpp::KeepLast(1));
@@ -220,6 +235,9 @@ NavSatTransform::~NavSatTransform() {}
 void NavSatTransform::transformCallback()
 {
   if (!transform_good_) {
+    if (!manual_datum_set_)
+      return;   // still waiting on first valid GPS
+
     computeTransform();
 
     if (transform_good_ && !use_odometry_yaw_ && !use_manual_datum_) {
@@ -360,6 +378,7 @@ bool NavSatTransform::datumCallback(
   // we are using a datum from now on, and we want other methods to not attempt
   // to transform the values we are specifying here.
   use_manual_datum_ = true;
+  manual_datum_set_ = true;
 
   transform_good_ = false;
 
@@ -619,8 +638,15 @@ void NavSatTransform::gpsFixCallback(
   if (good_gps) {
     // If we haven't computed the transform yet, then
     // store this message as the initial GPS data to use
-    if (!transform_good_ && !use_manual_datum_) {
-      setTransformGps(msg);
+    if (!transform_good_) {
+      if (!use_manual_datum_)
+        setTransformGps(msg);
+      else if (!manual_datum_set_) {
+        // hold back initial datum callback with a missing altitude until here
+        manual_datum_req_->geo_pose.position.altitude = msg->altitude;
+        auto response = std::make_shared<robot_localization::srv::SetDatum::Response>();
+        datumCallback(manual_datum_req_, response);
+      }
     }
 
     double cartesian_x = 0;
@@ -678,8 +704,9 @@ void NavSatTransform::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
       msg->header.stamp, transform_timeout_, target_frame_trans);
 
     if (can_transform) {
+      //FIXME: use this and comment out the old implementation.
       tf2::Quaternion q = target_frame_trans.getRotation();
-      transform_orientation_ = (q * transform_orientation_).normalize();
+      transform_orientation_ = (transform_orientation_ * q.inverse()).normalize();
 
       /*
       double roll_offset = 0;

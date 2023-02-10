@@ -46,5 +46,12 @@ navsat_transform_node:
 # Instead of using the first GPS location and IMU-based heading for the local-frame origin, users can specify the
 # origin (datum) using this parameter. The fields in the parameter represent latitude and longitude in decimal degrees,
 # and heading in radians. As navsat_transform_node assumes an ENU standard, a 0 heading corresponds to east.
+# This is effective only when wait_for_datum is set to true.
+# datum formats: [Lat, Lon] (yaw = 0); or [Lat, Lon, Yaw]; or [Lat, Lon, Alt, Yaw].
         datum: [55.944904, -3.186693, 0.0]
+
+# If specified, the datum is at sea level (Alt = 0). This overrides the values if set in the datum parameter.
+# If datum_at_sea_level=false and altitude is not provided in datum, then wait for the first valid GPS fix,
+# and use its altitude value.
+        datum_at_sea_level: false
 
