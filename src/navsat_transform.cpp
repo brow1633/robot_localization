@@ -86,7 +86,7 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   cartesian_broadcaster_(*this),
   utm_meridian_convergence_(0.0),
   utm_zone_(""),
-  world_frame_id_("odom"),
+  world_frame_id_(""),
   yaw_offset_(0.0),
   zero_altitude_(false)
 {
@@ -173,19 +173,17 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
     manual_datum_req_ = std::make_shared<robot_localization::srv::SetDatum::Request>();
     manual_datum_req_->geo_pose.position.latitude = datum_lat;
     manual_datum_req_->geo_pose.position.longitude = datum_lon;
+    if (manual_datum_at_sea_level) {
+      manual_datum_req_->geo_pose.position.altitude = 0.0;
+    } else if (datum_vals.size() == 4) {
+      manual_datum_req_->geo_pose.position.altitude = datum_vals[2];
+    } else {
+      // else: datum altitude is not sea level and not provided.
+      manual_datum_req_->geo_pose.position.altitude = NAN;
+    }
     tf2::Quaternion quat;
     quat.setRPY(0.0, 0.0, datum_yaw);
     manual_datum_req_->geo_pose.orientation = tf2::toMsg(quat);
-    if (manual_datum_at_sea_level) {
-      manual_datum_req_->geo_pose.position.altitude = 0.0;
-      auto response = std::make_shared<robot_localization::srv::SetDatum::Response>();
-      datumCallback(manual_datum_req_, response);
-    } else if (datum_vals.size() == 4) {
-      manual_datum_req_->geo_pose.position.altitude = datum_vals[2];
-      auto response = std::make_shared<robot_localization::srv::SetDatum::Response>();
-      datumCallback(manual_datum_req_, response);
-    }
-    // else: datum altitude is not sea level and not provided.
     // Hold back the datum callback, until the first valid GPS fix arrived for the altitude.
   }
 
@@ -235,8 +233,8 @@ NavSatTransform::~NavSatTransform() {}
 void NavSatTransform::transformCallback()
 {
   if (!transform_good_) {
-    if (!manual_datum_set_)
-      return;   // still waiting on first valid GPS
+    if (use_manual_datum_ && !manual_datum_set_)
+      return;   // still waiting on first valid GPS and odom
 
     computeTransform();
 
@@ -351,6 +349,8 @@ void NavSatTransform::computeTransform()
 
     // Send out the (static) UTM transform in case anyone else would like to use
     // it.
+    // The if condition at the beginning asserts setTransformOdometry() has been called,
+    // which means we have a valid world_frame_id_.
     if (broadcast_cartesian_transform_) {
       geometry_msgs::msg::TransformStamped cartesian_transform_stamped;
       cartesian_transform_stamped.header.stamp = this->now();
@@ -641,9 +641,11 @@ void NavSatTransform::gpsFixCallback(
     if (!transform_good_) {
       if (!use_manual_datum_)
         setTransformGps(msg);
-      else if (!manual_datum_set_) {
-        // hold back initial datum callback with a missing altitude until here
-        manual_datum_req_->geo_pose.position.altitude = msg->altitude;
+      else if (!manual_datum_set_ && world_frame_id_ != "") {
+        // hold back initial datum callback until here,
+        // such that a valid gps fix altitude and a valid world frame id are obtained.
+        if (isnan(manual_datum_req_->geo_pose.position.altitude))
+          manual_datum_req_->geo_pose.position.altitude = msg->altitude;
         auto response = std::make_shared<robot_localization::srv::SetDatum::Response>();
         datumCallback(manual_datum_req_, response);
       }

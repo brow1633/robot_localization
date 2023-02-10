@@ -54,4 +54,3 @@ navsat_transform_node:
 # If datum_at_sea_level=false and altitude is not provided in datum, then wait for the first valid GPS fix,
 # and use its altitude value.
         datum_at_sea_level: false
-
