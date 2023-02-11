@@ -83,6 +83,7 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   use_manual_datum_(false),
   manual_datum_set_(false),
   use_odometry_yaw_(false),
+  gps_odom_in_cartesian_frame_(false),
   cartesian_broadcaster_(*this),
   utm_meridian_convergence_(0.0),
   utm_zone_(""),
@@ -140,6 +141,14 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
       this->declare_parameter(
       "broadcast_cartesian_transform_as_parent_frame",
       broadcast_cartesian_transform_as_parent_frame_);
+  }
+
+  if (!broadcast_cartesian_transform_as_parent_frame_) {
+    gps_odom_in_cartesian_frame_ = this->declare_parameter(
+      "publish_gps_odom_in_cartesian_frame",
+      gps_odom_in_cartesian_frame_);
+    if (gps_odom_in_cartesian_frame_)
+      world_frame_id_ = use_local_cartesian_ ? "local_enu" : "utm";
   }
 
   datum_srv_ = this->create_service<robot_localization::srv::SetDatum>(
@@ -326,6 +335,8 @@ void NavSatTransform::computeTransform()
     tf2::Transform cartesian_pose_with_orientation;
     cartesian_pose_with_orientation.setOrigin(
       transform_cartesian_pose_corrected.getOrigin());
+    // In case the cartisian -> base_link does not involve orientation,
+    // override the orientation from the IMU source.
     cartesian_pose_with_orientation.setRotation(imu_quat);
 
     // Remove roll and pitch from odometry pose
@@ -339,6 +350,7 @@ void NavSatTransform::computeTransform()
     tf2::Transform transform_world_pose_yaw_only(transform_world_pose_);
     transform_world_pose_yaw_only.setRotation(odom_quat);
 
+    // odom -> base_link -> cartesian
     cartesian_world_transform_.mult(
       transform_world_pose_yaw_only,
       cartesian_pose_with_orientation.inverse());
@@ -519,13 +531,22 @@ void NavSatTransform::mapToLL(
   odom_as_cartesian.setRotation(tf2::Quaternion::getIdentity());
 
   // Now convert the data back to lat/long and place into the message
-  navsat_conversions::UTMtoLL(
-    odom_as_cartesian.getOrigin().getY(),
-    odom_as_cartesian.getOrigin().getX(),
-    utm_zone_,
-    latitude,
-    longitude);
-  altitude = odom_as_cartesian.getOrigin().getZ();
+  if (use_local_cartesian_) {
+    gps_local_cartesian_.Reverse(
+      odom_as_cartesian.getOrigin().getX(),
+      odom_as_cartesian.getOrigin().getY(),
+      odom_as_cartesian.getOrigin().getZ(),
+      latitude, longitude, altitude
+    );
+  } else {
+    navsat_conversions::UTMtoLL(
+      odom_as_cartesian.getOrigin().getY(),
+      odom_as_cartesian.getOrigin().getX(),
+      utm_zone_,
+      latitude,
+      longitude);
+    altitude = odom_as_cartesian.getOrigin().getZ();
+  }
 }
 
 void NavSatTransform::getRobotOriginCartesianPose(
@@ -600,6 +621,7 @@ void NavSatTransform::getRobotOriginWorldPose(
         tf2::quatRotate(
           robot_orientation.getRotation(), gps_offset_rotated.getOrigin()));
       gps_offset_rotated.setRotation(tf2::Quaternion::getIdentity());
+      // TODO: we are only offseting the position... Why not just subtract the position items?
       robot_odom_pose = gps_offset_rotated.inverse() * gps_odom_pose;
     } else {
       RCLCPP_ERROR(
@@ -673,6 +695,7 @@ void NavSatTransform::gpsFixCallback(
         cartesian_zone_tmp);
     }
     latest_cartesian_pose_.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, cartesian_z));
+    latest_cartesian_pose_.setRotation(tf2::Quaternion::getIdentity());
     latest_cartesian_covariance_.setZero();
 
     // Copy the measurement's covariance matrix so that we can rotate it later
@@ -749,6 +772,10 @@ void NavSatTransform::odomCallback(
   const nav_msgs::msg::Odometry::SharedPtr msg)
 {
   world_frame_id_ = msg->header.frame_id;
+
+  if (world_frame_id_ == (use_local_cartesian_ ? "local_enu" : "utm"))
+    gps_odom_in_cartesian_frame_ = true;
+
   base_link_frame_id_ = msg->child_frame_id;
 
   if (!transform_good_ && !use_manual_datum_) {
@@ -826,16 +853,6 @@ bool NavSatTransform::prepareGpsOdometry(nav_msgs::msg::Odometry * gps_odom)
   if (transform_good_ && gps_updated_ && odom_updated_) {
     *gps_odom = cartesianToMap(latest_cartesian_pose_);
 
-    tf2::Transform transformed_cartesian_gps;
-    tf2::fromMsg(gps_odom->pose.pose, transformed_cartesian_gps);
-
-    // Want the pose of the vehicle origin, not the GPS
-    tf2::Transform transformed_cartesian_robot;
-    rclcpp::Time time(static_cast<double>(gps_odom->header.stamp.sec) +
-      static_cast<double>(gps_odom->header.stamp.nanosec) /
-      1000000000.0);
-    getRobotOriginWorldPose(transformed_cartesian_gps, transformed_cartesian_robot, time);
-
     // Rotate the covariance as well
     tf2::Matrix3x3 rot(cartesian_world_transform_.getRotation());
     Eigen::MatrixXd rot_6d(POSE_SIZE, POSE_SIZE);
@@ -854,6 +871,25 @@ bool NavSatTransform::prepareGpsOdometry(nav_msgs::msg::Odometry * gps_odom)
     latest_cartesian_covariance_ =
       rot_6d * latest_cartesian_covariance_.eval() * rot_6d.transpose();
 
+    new_data = true;
+  } else if (gps_updated_ && gps_odom_in_cartesian_frame_) {
+    // this is seen during initialization, to resolve cyclic dependencies.
+    gps_odom->header.frame_id = world_frame_id_;
+    tf2::toMsg(latest_cartesian_pose_, gps_odom->pose.pose);
+    new_data = true;
+  }
+
+  if (new_data){
+    tf2::Transform transformed_cartesian_gps;
+    tf2::fromMsg(gps_odom->pose.pose, transformed_cartesian_gps);
+
+    // Want the pose of the vehicle origin, not the GPS
+    tf2::Transform transformed_cartesian_robot;
+    rclcpp::Time time(static_cast<double>(gps_odom->header.stamp.sec) +
+      static_cast<double>(gps_odom->header.stamp.nanosec) /
+      1000000000.0);
+    getRobotOriginWorldPose(transformed_cartesian_gps, transformed_cartesian_robot, time);
+
     // Now fill out the message. Set the orientation to the identity.
     tf2::toMsg(transformed_cartesian_robot, gps_odom->pose.pose);
     gps_odom->pose.pose.position.z =
@@ -867,9 +903,14 @@ bool NavSatTransform::prepareGpsOdometry(nav_msgs::msg::Odometry * gps_odom)
       }
     }
 
+<<<<<<< HEAD
+=======
+    // The offset from gps_frame_id to base_link_frame_id has been considered in transformed_cartesian_robot.
+    gps_odom->child_frame_id = base_link_frame_id_;
+
+>>>>>>> 594e610 (resolving tf initialization in navsat)
     // Mark this GPS as used
     gps_updated_ = false;
-    new_data = true;
   }
 
   return new_data;

@@ -356,7 +356,7 @@ private:
   tf2::Transform transform_cartesian_pose_;
 
   /**
-   * @brief Latest IMU orientation
+   * @brief Latest odom_frame -> odom_chld_frame transformation
    */
   tf2::Transform transform_world_pose_;
 
@@ -375,6 +375,10 @@ private:
    */
   bool use_manual_datum_;
 
+  /**
+   * @brief Whether the manual datum is registered upon node startup. Requires
+   * the reception of at least one valid odometry and one valid GPS Fix.
+   */
   bool manual_datum_set_;
 
   robot_localization::srv::SetDatum::Request::SharedPtr manual_datum_req_;
@@ -383,6 +387,12 @@ private:
    * @brief Whether we get the transform's yaw from the odometry or IMU source
    */
   bool use_odometry_yaw_;
+
+  /**
+   * @brief Whether to publish the filtered odometry in cartesian frame without
+   * rotating the origin.
+   */
+  bool gps_odom_in_cartesian_frame_;
 
   /**
    * @brief Used for publishing the static world_frame->cartesian transform
