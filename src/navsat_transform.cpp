@@ -913,12 +913,9 @@ bool NavSatTransform::prepareGpsOdometry(nav_msgs::msg::Odometry * gps_odom)
       }
     }
 
-<<<<<<< HEAD
-=======
     // The offset from gps_frame_id to base_link_frame_id has been considered in transformed_cartesian_robot.
     gps_odom->child_frame_id = base_link_frame_id_;
 
->>>>>>> 594e610 (resolving tf initialization in navsat)
     // Mark this GPS as used
     gps_updated_ = false;
   }

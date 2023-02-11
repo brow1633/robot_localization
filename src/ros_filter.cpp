@@ -2288,12 +2288,7 @@ void RosFilter<T>::setPoseCallback(
 
   RCLCPP_INFO_STREAM(
     get_logger(),
-<<<<<<< HEAD
     "Received set_pose request with value\n" << geometry_msgs::msg::to_yaml(*msg));
-=======
-    "Received set_pose request\n");
-  // with value\n" << geometry_msgs::msg::to_yaml(*msg));
->>>>>>> 6b876c2 (NavSat initial IMU transformation uses quat rotate. Performed unit testing.)
 
   std::string topic_name("set_pose");
 
