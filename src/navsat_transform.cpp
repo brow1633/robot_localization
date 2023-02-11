@@ -408,13 +408,18 @@ bool NavSatTransform::datumCallback(
   setTransformGps(fix_ptr);
 
   nav_msgs::msg::Odometry odom;
-  odom.pose.pose.orientation.x = 0;
-  odom.pose.pose.orientation.y = 0;
-  odom.pose.pose.orientation.z = 0;
-  odom.pose.pose.orientation.w = 1;
-  odom.pose.pose.position.x = 0;
-  odom.pose.pose.position.y = 0;
-  odom.pose.pose.position.z = 0;
+  if (gps_odom_in_cartesian_frame_){
+    // apply orientation because cartesian frame is always in enu.
+    odom.pose.pose.orientation = request->geo_pose.orientation;
+  } else {
+    odom.pose.pose.orientation.x = 0.;
+    odom.pose.pose.orientation.y = 0.;
+    odom.pose.pose.orientation.z = 0.;
+    odom.pose.pose.orientation.w = 1.;
+  }
+  odom.pose.pose.position.x = 0.;
+  odom.pose.pose.position.y = 0.;
+  odom.pose.pose.position.z = 0.;
   odom.header.frame_id = world_frame_id_;
   odom.child_frame_id = base_link_frame_id_;
   nav_msgs::msg::Odometry::SharedPtr odom_ptr =
@@ -497,18 +502,24 @@ nav_msgs::msg::Odometry NavSatTransform::cartesianToMap(
 {
   nav_msgs::msg::Odometry gps_odom{};
 
-  tf2::Transform transformed_cartesian_gps{};
-
-  transformed_cartesian_gps.mult(cartesian_world_transform_, cartesian_pose);
-  transformed_cartesian_gps.setRotation(tf2::Quaternion::getIdentity());
-
   // Set header information stamp because we would like to know the robot's
   // position at that timestamp
   gps_odom.header.frame_id = world_frame_id_;
   gps_odom.header.stamp = gps_update_time_;
 
   // Now fill out the message. Set the orientation to the identity.
-  tf2::toMsg(transformed_cartesian_gps, gps_odom.pose.pose);
+  if (gps_odom_in_cartesian_frame_) {
+    // we prefer to publish odometry in a world-fixed frame that is always ENU.
+    tf2::toMsg(latest_cartesian_pose_, gps_odom.pose.pose);
+  } else {
+    tf2::Transform transformed_cartesian_gps{};
+
+    transformed_cartesian_gps.mult(cartesian_world_transform_, cartesian_pose);
+    transformed_cartesian_gps.setRotation(tf2::Quaternion::getIdentity());
+  
+    tf2::toMsg(transformed_cartesian_gps, gps_odom.pose.pose);
+  }
+
   gps_odom.pose.pose.position.z = (zero_altitude_ ? 0.0 :
     gps_odom.pose.pose.position.z);
 
@@ -523,12 +534,16 @@ void NavSatTransform::mapToLL(
 {
   tf2::Transform odom_as_cartesian{};
 
-  tf2::Transform pose{};
-  pose.setOrigin(point);
-  pose.setRotation(tf2::Quaternion::getIdentity());
+  if (gps_odom_in_cartesian_frame_) {
+    odom_as_cartesian.setOrigin(point);
+  } else {
+    tf2::Transform pose{};
+    pose.setOrigin(point);
+    pose.setRotation(tf2::Quaternion::getIdentity());
 
-  odom_as_cartesian.mult(cartesian_world_trans_inverse_, pose);
-  odom_as_cartesian.setRotation(tf2::Quaternion::getIdentity());
+    odom_as_cartesian.mult(cartesian_world_trans_inverse_, pose);
+    //odom_as_cartesian.setRotation(tf2::Quaternion::getIdentity());
+  }
 
   // Now convert the data back to lat/long and place into the message
   if (use_local_cartesian_) {
@@ -600,7 +615,7 @@ void NavSatTransform::getRobotOriginWorldPose(
   const tf2::Transform & gps_odom_pose, tf2::Transform & robot_odom_pose,
   const rclcpp::Time & transform_time)
 {
-  robot_odom_pose.setIdentity();
+  robot_odom_pose = gps_odom_pose;
 
   // Remove the offset from base_link
   tf2::Transform gps_offset_rotated;
@@ -621,8 +636,8 @@ void NavSatTransform::getRobotOriginWorldPose(
         tf2::quatRotate(
           robot_orientation.getRotation(), gps_offset_rotated.getOrigin()));
       gps_offset_rotated.setRotation(tf2::Quaternion::getIdentity());
-      // TODO: we are only offseting the position... Why not just subtract the position items?
-      robot_odom_pose = gps_offset_rotated.inverse() * gps_odom_pose;
+      // simplified calculation for robot_odom_pose = gps_offset_rotated.inverse() * gps_odom_pose
+      robot_odom_pose.setOrigin(gps_odom_pose.getOrigin() - gps_offset_rotated.getOrigin());
     } else {
       RCLCPP_ERROR(
         this->get_logger(),
@@ -772,10 +787,6 @@ void NavSatTransform::odomCallback(
   const nav_msgs::msg::Odometry::SharedPtr msg)
 {
   world_frame_id_ = msg->header.frame_id;
-
-  if (world_frame_id_ == (use_local_cartesian_ ? "local_enu" : "utm"))
-    gps_odom_in_cartesian_frame_ = true;
-
   base_link_frame_id_ = msg->child_frame_id;
 
   if (!transform_good_ && !use_manual_datum_) {
@@ -805,23 +816,25 @@ bool NavSatTransform::prepareFilteredGps(
       latest_world_pose_.getOrigin(), filtered_gps->latitude,
       filtered_gps->longitude, filtered_gps->altitude);
 
-    // Rotate the covariance as well
-    tf2::Matrix3x3 rot(cartesian_world_trans_inverse_.getRotation());
-    Eigen::MatrixXd rot_6d(POSE_SIZE, POSE_SIZE);
-    rot_6d.setIdentity();
+    if (!gps_odom_in_cartesian_frame_) {
+      // Rotate the covariance as well
+      tf2::Matrix3x3 rot(cartesian_world_trans_inverse_.getRotation());
+      Eigen::MatrixXd rot_6d(POSE_SIZE, POSE_SIZE);
+      rot_6d.setIdentity();
 
-    for (size_t rInd = 0; rInd < POSITION_SIZE; ++rInd) {
-      rot_6d(rInd, 0) = rot.getRow(rInd).getX();
-      rot_6d(rInd, 1) = rot.getRow(rInd).getY();
-      rot_6d(rInd, 2) = rot.getRow(rInd).getZ();
-      rot_6d(rInd + POSITION_SIZE, 3) = rot.getRow(rInd).getX();
-      rot_6d(rInd + POSITION_SIZE, 4) = rot.getRow(rInd).getY();
-      rot_6d(rInd + POSITION_SIZE, 5) = rot.getRow(rInd).getZ();
+      for (size_t rInd = 0; rInd < POSITION_SIZE; ++rInd) {
+        rot_6d(rInd, 0) = rot.getRow(rInd).getX();
+        rot_6d(rInd, 1) = rot.getRow(rInd).getY();
+        rot_6d(rInd, 2) = rot.getRow(rInd).getZ();
+        rot_6d(rInd + POSITION_SIZE, 3) = rot.getRow(rInd).getX();
+        rot_6d(rInd + POSITION_SIZE, 4) = rot.getRow(rInd).getY();
+        rot_6d(rInd + POSITION_SIZE, 5) = rot.getRow(rInd).getZ();
+      }
+
+      // Rotate the covariance
+      latest_odom_covariance_ =
+        rot_6d * latest_odom_covariance_.eval() * rot_6d.transpose();
     }
-
-    // Rotate the covariance
-    latest_odom_covariance_ =
-      rot_6d * latest_odom_covariance_.eval() * rot_6d.transpose();
 
     // Copy the measurement's covariance matrix back
     for (size_t i = 0; i < POSITION_SIZE; i++) {
@@ -850,32 +863,29 @@ bool NavSatTransform::prepareGpsOdometry(nav_msgs::msg::Odometry * gps_odom)
 {
   bool new_data = false;
 
-  if (transform_good_ && gps_updated_ && odom_updated_) {
+  if (transform_good_ && gps_updated_) {
     *gps_odom = cartesianToMap(latest_cartesian_pose_);
 
-    // Rotate the covariance as well
-    tf2::Matrix3x3 rot(cartesian_world_transform_.getRotation());
-    Eigen::MatrixXd rot_6d(POSE_SIZE, POSE_SIZE);
-    rot_6d.setIdentity();
+    if (!gps_odom_in_cartesian_frame_) {
+      // Rotate the covariance as well
+      tf2::Matrix3x3 rot(cartesian_world_transform_.getRotation());
+      Eigen::MatrixXd rot_6d(POSE_SIZE, POSE_SIZE);
+      rot_6d.setIdentity();
 
-    for (size_t rInd = 0; rInd < POSITION_SIZE; ++rInd) {
-      rot_6d(rInd, 0) = rot.getRow(rInd).getX();
-      rot_6d(rInd, 1) = rot.getRow(rInd).getY();
-      rot_6d(rInd, 2) = rot.getRow(rInd).getZ();
-      rot_6d(rInd + POSITION_SIZE, 3) = rot.getRow(rInd).getX();
-      rot_6d(rInd + POSITION_SIZE, 4) = rot.getRow(rInd).getY();
-      rot_6d(rInd + POSITION_SIZE, 5) = rot.getRow(rInd).getZ();
+      for (size_t rInd = 0; rInd < POSITION_SIZE; ++rInd) {
+        rot_6d(rInd, 0) = rot.getRow(rInd).getX();
+        rot_6d(rInd, 1) = rot.getRow(rInd).getY();
+        rot_6d(rInd, 2) = rot.getRow(rInd).getZ();
+        rot_6d(rInd + POSITION_SIZE, 3) = rot.getRow(rInd).getX();
+        rot_6d(rInd + POSITION_SIZE, 4) = rot.getRow(rInd).getY();
+        rot_6d(rInd + POSITION_SIZE, 5) = rot.getRow(rInd).getZ();
+      }
+
+      // Rotate the covariance
+      latest_cartesian_covariance_ =
+        rot_6d * latest_cartesian_covariance_.eval() * rot_6d.transpose();
     }
-
-    // Rotate the covariance
-    latest_cartesian_covariance_ =
-      rot_6d * latest_cartesian_covariance_.eval() * rot_6d.transpose();
-
-    new_data = true;
-  } else if (gps_updated_ && gps_odom_in_cartesian_frame_) {
-    // this is seen during initialization, to resolve cyclic dependencies.
-    gps_odom->header.frame_id = world_frame_id_;
-    tf2::toMsg(latest_cartesian_pose_, gps_odom->pose.pose);
+    
     new_data = true;
   }
 
