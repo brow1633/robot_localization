@@ -37,11 +37,14 @@
 
 #include "Eigen/Dense"
 #include "GeographicLib/LocalCartesian.hpp"
+#include "GeographicLib/MGRS.hpp"
+#include "GeographicLib/UTMUPS.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/timer.hpp"
 #include "robot_localization/srv/from_ll.hpp"
 #include "robot_localization/srv/set_datum.hpp"
+#include "robot_localization/srv/set_utm_zone.hpp"
 #include "robot_localization/srv/to_ll.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
@@ -77,15 +80,15 @@ private:
   /**
    * @brief Computes the transform from the Cartesian frame to the odom frame
    */
-  void computeTransform();
+  bool computeTransform();
 
   /**
    * @brief Callback for the datum service
    */
   bool datumCallback(
-    const std::shared_ptr<robot_localization::srv::SetDatum::Request>
+    const robot_localization::srv::SetDatum::Request::SharedPtr
     request,
-    std::shared_ptr<robot_localization::srv::SetDatum::Response>);
+    robot_localization::srv::SetDatum::Response::SharedPtr);
 
   //! @brief Callback for the to Lat Long service
   //!
@@ -98,6 +101,13 @@ private:
   bool fromLLCallback(
     const std::shared_ptr<robot_localization::srv::FromLL::Request> request,
     std::shared_ptr<robot_localization::srv::FromLL::Response> response);
+
+  /**
+   * @brief Callback for the UTM zone service
+  */
+  bool setUTMZoneCallback(
+    const std::shared_ptr<robot_localization::srv::SetUTMZone::Request> request,
+    std::shared_ptr<robot_localization::srv::SetUTMZone::Response>);
 
   /**
    * @brief Given the pose of the navsat sensor in the Cartesian frame, removes the
@@ -178,6 +188,11 @@ private:
     double & altitude) const;
 
   /**
+   * @brief Sets the manual datum pose to be used by the transform computation
+   */
+  void setManualDatum();
+
+  /**
    * @brief Frame ID of the robot's body frame
    *
    * This is needed for obtaining transforms from the robot's body frame to the
@@ -197,6 +212,11 @@ private:
   bool broadcast_cartesian_transform_as_parent_frame_;
 
   /**
+   * @brief scaling factor for cartesian coordinates
+   */
+  double cartesian_scale_;
+
+  /**
    * @brief TimerBase for publish callback
    */
   rclcpp::Service<robot_localization::srv::SetDatum>::SharedPtr datum_srv_;
@@ -210,6 +230,11 @@ private:
    * @brief Service for from Lat Long
    */
   rclcpp::Service<robot_localization::srv::FromLL>::SharedPtr from_ll_srv_;
+
+  /**
+   * @brief Service for set UTM zone
+  */
+  rclcpp::Service<robot_localization::srv::SetUTMZone>::SharedPtr set_utm_zone_srv_;
 
   /**
    * @brief Navsatfix publisher
@@ -250,7 +275,7 @@ private:
   /**
    * @brief Whether or not the GPS fix is usable
    */
-  bool has_transform_gps_;
+  bool has_transform_enu_to_gps_init_;
 
   /**
    * @brief Signifies that we have received a usable IMU message
@@ -260,7 +285,7 @@ private:
   /**
    * @brief Signifies that we have received a usable odometry message
    */
-  bool has_transform_odom_;
+  bool has_transform_world_to_baselink_init_;
 
   /**
    * @brief IMU Subscription
@@ -275,12 +300,12 @@ private:
   /**
    * @brief Covariance for most recent GPS/UTM/LocalCartesian data
    */
-  Eigen::MatrixXd latest_cartesian_covariance_;
+  Eigen::MatrixXd transform_enu_to_gps_covariance_;
 
   /**
    * @brief Latest GPS data, stored as Cartesian coords
    */
-  tf2::Transform latest_cartesian_pose_;
+  tf2::Transform transform_enu_to_gps_;
 
   /**
    * @brief Latest odometry pose data
@@ -315,6 +340,11 @@ private:
   bool odom_updated_;
 
   /**
+   * @brief Frame ID to express UTM coordinates, referred to when use_local_cartesian_ is false
+   */
+  std::string utm_frame_id_;
+
+  /**
    * @brief Whether or not we publish filtered GPS messages
    */
   bool publish_gps_;
@@ -342,7 +372,7 @@ private:
   /**
    * @brief Latest IMU orientation
    */
-  tf2::Quaternion transform_orientation_;
+  tf2::Quaternion rot_localenu_to_baselink_init_;
 
   /**
    * @brief Parameter that specifies the how long we wait for a transform to
@@ -353,17 +383,22 @@ private:
   /**
    * @brief Holds the Cartesian (UTM or local ENU) pose that is used to compute the transform
    */
-  tf2::Transform transform_cartesian_pose_;
+  tf2::Transform transform_enu_to_gps_init_;
 
   /**
    * @brief Latest odom_frame -> odom_chld_frame transformation
    */
-  tf2::Transform transform_world_pose_;
+  tf2::Transform transform_world_to_baselink_init_;
 
   /**
    * @brief Whether we use a Local Cartesian (tangent plane ENU) or the UTM coordinates as our cartesian
    */
   bool use_local_cartesian_;
+
+  /**
+   * @brief Whether we want to force the user's UTM zone and not rely on current GPS data for determining it
+   */
+  bool force_user_utm_;
 
   //! @brief Local Cartesian projection around gps origin
   //!
@@ -412,17 +447,22 @@ private:
   /**
    * @brief Holds the cartesian->odom transform
    */
-  tf2::Transform cartesian_world_transform_;
+  tf2::Transform transform_world_to_enu_;
 
   /**
    * @brief Holds the odom->Cartesian transform for filtered GPS broadcast
    */
-  tf2::Transform cartesian_world_trans_inverse_;
+  tf2::Transform transform_enu_to_world_;
 
   /**
-   * @brief Cartesian zone as determined after transforming GPS message
+   * @brief @brief the UTM zone (zero means UPS)
    */
-  std::string utm_zone_;
+  int utm_zone_;
+
+  /**
+   * @brief hemisphere (true means north, false means south)
+  */
+  bool northp_;
 
   /**
    * @brief Frame ID of the GPS odometry output
@@ -447,6 +487,15 @@ private:
    * converted GPS odometry message.
    */
   bool zero_altitude_;
+
+  /**
+   * @brief Manual datum pose to be used by the transform computation
+   *
+   * Then manual datum requested by a service request (or configuration) is stored
+   * here until the odom message is received, and the manual datum pose can be
+   * set.
+   */
+  geographic_msgs::msg::GeoPose manual_datum_geopose_;
 };
 
 }  // namespace robot_localization
