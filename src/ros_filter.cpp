@@ -257,11 +257,12 @@ void RosFilter<T>::accelerationCallback(
 
     // Make sure we're actually updating at least one of these variables
     std::vector<bool> update_vector_corrected = callback_data.update_vector_;
+    std::vector<double> variance_shim_corrected = callback_data.variance_shim_;
 
     // Prepare the twist data for inclusion in the filter
     if (prepareAcceleration(
         msg, topic_name, target_frame, callback_data.relative_,
-        update_vector_corrected, measurement,
+        update_vector_corrected, variance_shim_corrected, measurement,
         measurement_covariance))
     {
       // Store the measurement. Add an "acceleration" suffix so we know what
@@ -1220,6 +1221,9 @@ void RosFilter<T>::loadParams()
       int queue_size = this->declare_parameter(
         odom_topic_name +
         std::string("_queue_size"), 10);
+      
+      // Load the variance shim (min variance) for this sensor
+      std::vector<double> var_shim_vec = loadVarShimConfig(odom_topic_name);
 
       // Now pull in its boolean update vector configuration. Create separate
       // vectors for pose and twist data, and then zero out the opposite values
@@ -1241,11 +1245,11 @@ void RosFilter<T>::loadParams()
         std::accumulate(twist_update_vec.begin(), twist_update_vec.end(), 0);
 
       const CallbackData pose_callback_data(
-        odom_topic_name + "_pose", pose_update_vec, pose_update_sum,
+        odom_topic_name + "_pose", pose_update_vec, var_shim_vec, pose_update_sum,
         differential, relative, pose_use_child_frame, pose_mahalanobis_thresh);
 
       const CallbackData twist_callback_data(
-        odom_topic_name + "_twist", twist_update_vec, twist_update_sum, false,
+        odom_topic_name + "_twist", twist_update_vec, var_shim_vec, twist_update_sum, false,
         false, false, twist_mahalanobis_thresh);
 
       // Store the odometry topic subscribers so they don't go out of scope.
@@ -1367,6 +1371,9 @@ void RosFilter<T>::loadParams()
         pose_topic_name +
         std::string("_queue_size"), 10);
 
+      // Load the variance shim (min variance) for this sensor
+      std::vector<double> var_shim_vec = loadVarShimConfig(pose_topic_name);
+
       // Pull in the sensor's config, zero out values that are invalid for the
       // pose type
       std::vector<bool> pose_update_vec = loadUpdateConfig(pose_topic_name);
@@ -1383,7 +1390,7 @@ void RosFilter<T>::loadParams()
 
       if (pose_update_sum > 0) {
         const CallbackData callback_data(pose_topic_name, pose_update_vec,
-          pose_update_sum, differential,
+          var_shim_vec, pose_update_sum, differential,
           relative, false, pose_mahalanobis_thresh);
 
         std::function<void(const std::shared_ptr<
@@ -1467,6 +1474,9 @@ void RosFilter<T>::loadParams()
         twist_topic_name +
         std::string("_queue_size"), 10);
 
+      // Load the variance shim (min variance) for this sensor
+      std::vector<double> var_shim_vec = loadVarShimConfig(twist_topic_name);
+
       // Pull in the sensor's config, zero out values that are invalid for the
       // twist type
       std::vector<bool> twist_update_vec = loadUpdateConfig(twist_topic_name);
@@ -1479,7 +1489,7 @@ void RosFilter<T>::loadParams()
 
       if (twist_update_sum > 0) {
         const CallbackData callback_data(twist_topic_name, twist_update_vec,
-          twist_update_sum, false, false, false,
+          var_shim_vec, twist_update_sum, false, false, false,
           twist_mahalanobis_thresh);
 
         std::function<void(const std::shared_ptr<
@@ -1583,6 +1593,9 @@ void RosFilter<T>::loadParams()
         imu_topic_name +
         std::string("_queue_size"), 10);
 
+      // Load the variance shim (min variance) for this sensor
+      std::vector<double> var_shim_vec = loadVarShimConfig(imu_topic_name);
+
       // Now pull in its boolean update vector configuration and differential
       // update configuration (as this contains pose information)
       std::vector<bool> update_vec = loadUpdateConfig(imu_topic_name);
@@ -1682,13 +1695,13 @@ void RosFilter<T>::loadParams()
 
       if (pose_update_sum + twist_update_sum + accelUpdateSum > 0) {
         const CallbackData pose_callback_data(
-          imu_topic_name + "_pose", pose_update_vec, pose_update_sum,
+          imu_topic_name + "_pose", pose_update_vec, var_shim_vec, pose_update_sum,
           differential, relative, false, pose_mahalanobis_thresh);
         const CallbackData twist_callback_data(
-          imu_topic_name + "_twist", twist_update_vec, twist_update_sum,
+          imu_topic_name + "_twist", twist_update_vec, var_shim_vec, twist_update_sum,
           differential, relative, false, twist_mahalanobis_thresh);
         const CallbackData accel_callback_data(
-          imu_topic_name + "_acceleration", accel_update_vec, accelUpdateSum,
+          imu_topic_name + "_acceleration", accel_update_vec, var_shim_vec, accelUpdateSum,
           differential, relative, false, accel_mahalanobis_thresh);
 
         std::function<void(const std::shared_ptr<sensor_msgs::msg::Imu>)>
@@ -1983,11 +1996,12 @@ void RosFilter<T>::poseCallback(
 
     // Make sure we're actually updating at least one of these variables
     std::vector<bool> update_vector_corrected = callback_data.update_vector_;
+    std::vector<double> variance_shim_corrected = callback_data.variance_shim_;
 
     // Prepare the pose data for inclusion in the filter
     if (preparePose(
         msg, topic_name, target_frame, pose_source_frame, callback_data.differential_,
-        callback_data.relative_, imu_data, update_vector_corrected,
+        callback_data.relative_, imu_data, update_vector_corrected, variance_shim_corrected,
         measurement, measurement_covariance))
     {
       // Store the measurement. Add a "pose" suffix so we know what kind of
@@ -2313,6 +2327,7 @@ void RosFilter<T>::setPoseCallback(
   Eigen::VectorXd measurement(STATE_SIZE);
   Eigen::MatrixXd measurement_covariance(STATE_SIZE, STATE_SIZE);
   std::vector<bool> update_vector(STATE_SIZE, true);
+  std::vector<double> variance_shim(STATE_SIZE, 0.0);
 
   // We only measure pose variables, so initialize the vector to 0
   measurement.setZero();
@@ -2326,7 +2341,7 @@ void RosFilter<T>::setPoseCallback(
   // Since pose messages do not provide a child_frame_id, it defaults to baseLinkFrameId_
   preparePose(
     msg, topic_name, world_frame_id_, base_link_frame_id_, false, false, false,
-    update_vector, measurement, measurement_covariance);
+    update_vector, variance_shim, measurement, measurement_covariance);
 
   // For the state
   filter_.setState(measurement);
@@ -2423,11 +2438,12 @@ void RosFilter<T>::twistCallback(
 
     // Make sure we're actually updating at least one of these variables
     std::vector<bool> update_vector_corrected = callback_data.update_vector_;
+    std::vector<double> variance_shim_corrected = callback_data.variance_shim_;
 
     // Prepare the twist data for inclusion in the filter
     if (prepareTwist(
         msg, topic_name, target_frame, update_vector_corrected,
-        measurement, measurement_covariance))
+        variance_shim_corrected, measurement, measurement_covariance))
     {
       // Store the measurement. Add a "twist" suffix so we know what kind of
       // measurement we're dealing with when we debug the core filter logic.
@@ -2624,6 +2640,17 @@ std::vector<bool> RosFilter<T>::loadUpdateConfig(const std::string & topic_name)
   return update_vector;
 }
 
+template <typename T>
+std::vector<double> RosFilter<T>::loadVarShimConfig(const std::string & topic_name)
+{
+  std::vector<double> shim_vector(STATE_SIZE, 0);
+  const std::string topic_config_name = topic_name + "_variance_shim";
+
+  shim_vector = this->declare_parameter(topic_config_name, shim_vector);
+
+  return shim_vector;
+}
+
 template<typename T>
 bool RosFilter<T>::prepareAcceleration(
   const sensor_msgs::msg::Imu::SharedPtr msg,
@@ -2631,6 +2658,7 @@ bool RosFilter<T>::prepareAcceleration(
   const std::string & target_frame,
   const bool relative,
   std::vector<bool> & update_vector,
+  std::vector<double> & variance_shim,
   Eigen::VectorXd & measurement,
   Eigen::MatrixXd & measurement_covariance)
 {
@@ -2791,6 +2819,11 @@ bool RosFilter<T>::prepareAcceleration(
     measurement(StateMemberAy) = acc_tmp.getY();
     measurement(StateMemberAz) = acc_tmp.getZ();
 
+    for(int i = 0; i < ACCELERATION_SIZE; i++) {
+      covariance_rotated(i, i) = std::max(
+        variance_shim[i + POSITION_A_OFFSET], covariance_rotated(i, i));
+    }
+
     // Copy the covariances
     measurement_covariance.block(
       POSITION_A_OFFSET, POSITION_A_OFFSET,
@@ -2820,8 +2853,8 @@ bool RosFilter<T>::preparePose(
   const std::string & topic_name, const std::string & target_frame,
   const std::string & source_frame,
   const bool differential, const bool relative, const bool imu_data,
-  std::vector<bool> & update_vector, Eigen::VectorXd & measurement,
-  Eigen::MatrixXd & measurement_covariance)
+  std::vector<bool> & update_vector, std::vector<double> & variance_shim,
+  Eigen::VectorXd & measurement, Eigen::MatrixXd & measurement_covariance)
 {
   bool retVal = false;
 
@@ -3212,7 +3245,7 @@ bool RosFilter<T>::preparePose(
         // required frame
         success = prepareTwist(
           twist_ptr, topic_name + "_twist",
-          base_link_frame_id_, update_vector,
+          base_link_frame_id_, update_vector, variance_shim,
           measurement, measurement_covariance);
       }
 
@@ -3256,6 +3289,11 @@ bool RosFilter<T>::preparePose(
       measurement(StateMemberPitch) = pitch;
       measurement(StateMemberYaw) = yaw;
 
+      for(int i = 0; i < POSE_SIZE; i++) {
+        covariance_rotated(i, i) = std::max(
+          variance_shim[i + 0], covariance_rotated(i, i));
+      }
+
       measurement_covariance.block(0, 0, POSE_SIZE, POSE_SIZE) =
         covariance_rotated.block(0, 0, POSE_SIZE, POSE_SIZE);
 
@@ -3283,8 +3321,8 @@ template<typename T>
 bool RosFilter<T>::prepareTwist(
   const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg,
   const std::string & topic_name, const std::string & target_frame,
-  std::vector<bool> & update_vector, Eigen::VectorXd & measurement,
-  Eigen::MatrixXd & measurement_covariance)
+  std::vector<bool> & update_vector, std::vector<double> & variance_shim,
+  Eigen::VectorXd & measurement, Eigen::MatrixXd & measurement_covariance)
 {
   RF_DEBUG("------ RosFilter<T>::prepareTwist (" << topic_name << ") ------\n");
 
@@ -3412,6 +3450,11 @@ bool RosFilter<T>::prepareTwist(
     measurement(StateMemberVroll) = meas_twist_rot.getX();
     measurement(StateMemberVpitch) = meas_twist_rot.getY();
     measurement(StateMemberVyaw) = meas_twist_rot.getZ();
+
+    for(int i = 0; i < TWIST_SIZE; i++) {
+      covariance_rotated(i, i) = std::max(
+        variance_shim[i + POSITION_V_OFFSET], covariance_rotated(i, i));
+    }
 
     // Copy the covariances
     measurement_covariance.block(

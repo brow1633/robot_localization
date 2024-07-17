@@ -70,17 +70,19 @@ struct CallbackData
 {
   CallbackData(
     const std::string & topic_name,
-    const std::vector<bool> & update_vector, const int update_sum,
-    const bool differential, const bool relative,
-    const bool pose_use_child_frame,
+    const std::vector<bool> & update_vector,
+    const std::vector<double> & variance_shim,
+    const int update_sum, const bool differential, 
+    const bool relative, const bool pose_use_child_frame,
     const double rejection_threshold)
   : topic_name_(topic_name), update_vector_(update_vector),
-    update_sum_(update_sum), differential_(differential),
+    variance_shim_(variance_shim), update_sum_(update_sum), differential_(differential),
     relative_(relative), pose_use_child_frame_(pose_use_child_frame),
     rejection_threshold_(rejection_threshold) {}
 
   std::string topic_name_;
   std::vector<bool> update_vector_;
+  std::vector<double> variance_shim_;
   int update_sum_;
   bool differential_;
   bool relative_;
@@ -423,12 +425,18 @@ protected:
     const Eigen::MatrixXd & covariance_in,
     double * covariance_out, const size_t dimension);
 
+
   //! @brief Loads fusion settings from the config file
   //! @param[in] topic_name - The name of the topic for which to load settings
   //! @return The boolean vector of update settings for each variable for this
   //! topic
   //!
   std::vector<bool> loadUpdateConfig(const std::string & topic_name);
+
+  //! @brief Loads variance shim settings from config file
+  //! @param[in] topic_name - The name of the topic for which to load settings
+  //! @return The double vector of minimum variances for each variable
+  std::vector<double> loadVarShimConfig(const std::string & topic_name);
 
   //! @brief Prepares an IMU message's linear acceleration for integration into
   //! the filter
@@ -439,6 +447,7 @@ protected:
   //! @param[in] relative - whether the IMU sensor reports pose relative to
   //! initialization pose
   //! @param[in] update_vector - The update vector for the data source
+  //! @param[in] variance_shim - The minimum allowed variance for each state
   //! @param[in] measurement - The twist data converted to a measurement
   //! @param[in] measurement_covariance - The covariance of the converted
   //! measurement
@@ -449,6 +458,7 @@ protected:
     const std::string & target_frame,
     const bool relative,
     std::vector<bool> & update_vector,
+    std::vector<double> & variance_shim,
     Eigen::VectorXd & measurement,
     Eigen::MatrixXd & measurement_covariance);
 
@@ -464,6 +474,7 @@ protected:
   //! the first
   //! @param[in] imuData - Whether this measurement is from an IMU
   //! @param[in,out] updateVector - The update vector for the data source
+  //! @param[in] variance_shim - The minimum allowed variance for each state
   //! @param[out] measurement - The pose data converted to a measurement
   //! @param[out] measurementCovariance - The covariance of the converted
   //! measurement
@@ -475,7 +486,8 @@ protected:
     const std::string & topic_name, const std::string & target_frame,
     const std::string & source_frame,
     const bool differential, const bool relative, const bool imu_data,
-    std::vector<bool> & update_vector, Eigen::VectorXd & measurement,
+    std::vector<bool> & update_vector, std::vector<double> & variance_shim, 
+    Eigen::VectorXd & measurement,
     Eigen::MatrixXd & measurement_covariance);
 
   //! @brief Prepares a twist message for integration into the filter
@@ -484,6 +496,7 @@ protected:
   //! received
   //! @param[in] targetFrame - The target tf frame
   //! @param[in,out] updateVector - The update vector for the data source
+  //! @param[in] variance_shim - The minimum allowed variance for each state
   //! @param[out] measurement - The twist data converted to a measurement
   //! @param[out] measurementCovariance - The covariance of the converted
   //! measurement
@@ -493,7 +506,8 @@ protected:
   bool prepareTwist(
     const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg,
     const std::string & topicName, const std::string & targetFrame,
-    std::vector<bool> & updateVector, Eigen::VectorXd & measurement,
+    std::vector<bool> & updateVector, std::vector<double> & variance_shim, 
+    Eigen::VectorXd & measurement,
     Eigen::MatrixXd & measurementCovariance);
 
   //! @brief Whether or not we print diagnostic messages to the /diagnostics
