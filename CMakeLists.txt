@@ -103,7 +103,7 @@ target_link_libraries(
   ${library_name}
   ${GeographicLib_LIBRARIES}
   ${EIGEN3_LIBRARIES}
-  yaml-cpp::yaml-cpp
+  yaml-cpp
 )
 
 ament_target_dependencies(
