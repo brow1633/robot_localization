@@ -486,9 +486,15 @@ bool NavSatTransform::fromLLCallback(
     // Transform to UTM using the fixed utm_zone_
     int zone_tmp;
     bool northp_tmp;
-    GeographicLib::UTMUPS::Forward(
-      latitude, longitude,
-      zone_tmp, northp_tmp, cartesian_x, cartesian_y, utm_zone_);
+
+    try {
+      GeographicLib::UTMUPS::Forward(
+        latitude, longitude,
+        zone_tmp, northp_tmp, cartesian_x, cartesian_y, utm_zone_);
+    } catch (GeographicLib::GeographicErr const & e) {
+      RCLCPP_ERROR_STREAM(this->get_logger(), e.what());
+      return false;
+    }
   }
 
   cartesian_pose.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, altitude));
@@ -673,15 +679,17 @@ void NavSatTransform::getRobotOriginWorldPose(
       robot_orientation.setOrigin(tf2::Vector3(0., 0., 0.));
       robot_odom_pose.setOrigin(gps_odom_pose.getOrigin() - (robot_orientation * transform_baselink_to_gps).getOrigin());
     } else {
-      RCLCPP_ERROR(
+      RCLCPP_ERROR_THROTTLE(
         this->get_logger(),
+        *this->get_clock(), 5000,
         "Could not obtain %s -> %s transform. "
         "Will not remove offset of navsat device from robot's origin",
         world_frame_id_.c_str(), base_link_frame_id_.c_str());
     }
   } else {
-    RCLCPP_ERROR(
+    RCLCPP_ERROR_THROTTLE(
       this->get_logger(),
+      *this->get_clock(), 5000,
       "Could not obtain %s -> %s transform. "
       "Will not remove offset of navsat device from robot's origin.",
       base_link_frame_id_.c_str(), gps_frame_id_.c_str());
