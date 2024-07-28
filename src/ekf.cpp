@@ -173,7 +173,6 @@ void Ekf::correct(const Measurement & measurement)
   Eigen::MatrixXd hphr_inverse =
     (state_to_measurement_subset * pht + measurement_covariance_subset)
     .inverse();
-  kalman_gain_subset.noalias() = pht * hphr_inverse;
 
   innovation_subset = (measurement_subset - state_subset);
 
@@ -192,6 +191,16 @@ void Ekf::correct(const Measurement & measurement)
       innovation_subset, hphr_inverse,
       measurement.mahalanobis_thresh_))
   {
+    if(!checkMahalanobisThreshold(
+      innovation_subset, hphr_inverse,
+      measurement.adaptive_covariance_threshold_))
+    {
+      Eigen::MatrixXd hph_inverse = (state_to_measurement_subset * pht).inverse();
+      measurement_covariance_subset += 1.0 * innovation_subset * hph_inverse * innovation_subset.transpose();
+
+      hphr_inverse = (state_to_measurement_subset * pht + measurement_covariance_subset).inverse();
+    }
+    kalman_gain_subset.noalias() = pht * hphr_inverse;
     // (3) Apply the gain to the difference between the state and measurement: x
     // = x + K(z - Hx)
     state_.noalias() += kalman_gain_subset * innovation_subset;
