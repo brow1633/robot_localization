@@ -74,11 +74,15 @@ struct CallbackData
     const std::vector<double> & variance_shim,
     const int update_sum, const bool differential, 
     const bool relative, const bool pose_use_child_frame,
-    const double rejection_threshold)
+    const double rejection_threshold,
+    const double adaptive_covariance_threshold)
   : topic_name_(topic_name), update_vector_(update_vector),
-    variance_shim_(variance_shim), update_sum_(update_sum), differential_(differential),
+    variance_shim_(variance_shim), 
+    update_sum_(update_sum), differential_(differential),
     relative_(relative), pose_use_child_frame_(pose_use_child_frame),
-    rejection_threshold_(rejection_threshold) {}
+    rejection_threshold_(rejection_threshold),
+    adaptive_covariance_threshold_(adaptive_covariance_threshold)
+    {}
 
   std::string topic_name_;
   std::vector<bool> update_vector_;
@@ -88,6 +92,7 @@ struct CallbackData
   bool relative_;
   bool pose_use_child_frame_;
   double rejection_threshold_;
+  double adaptive_covariance_threshold_;
 };
 
 using MeasurementQueue =
@@ -172,6 +177,8 @@ public:
   //! variables to update from this measurement
   //! @param[in] mahalanobis_thresh - Threshold, expressed as a Mahalanobis
   //! distance, for outlier rejection
+  //! @param[in] adaptive_covariance_thresh - Mahalanobis distance threshold
+  //! for use of adaptive covariance
   //! @param[in] time - The time of arrival (in seconds)
   //!
   void enqueueMeasurement(
@@ -180,6 +187,7 @@ public:
     const Eigen::MatrixXd & measurement_covariance,
     const std::vector<bool> & update_vector,
     const double mahalanobis_thresh,
+    const double adaptive_covariance_thresh,
     const rclcpp::Time & time);
 
   //! @brief Method for zeroing out 3D variables within measurements

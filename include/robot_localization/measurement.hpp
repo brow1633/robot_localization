@@ -57,6 +57,7 @@ struct Measurement
 {
   Measurement()
   : time_(0), mahalanobis_thresh_(std::numeric_limits<double>::max()),
+    adaptive_covariance_threshold_(std::numeric_limits<double>::max()),
     latest_control_time_(0), topic_name_(""), latest_control_()
   {
   }
@@ -67,6 +68,9 @@ struct Measurement
 
   // The Mahalanobis distance threshold in number of sigmas
   double mahalanobis_thresh_;
+
+  // The Mahalanobis distance of the adaptive covariance threshold
+  double adaptive_covariance_threshold_;
 
   // The time stamp of the most recent control term (needed for lagged data)
   rclcpp::Time latest_control_time_;

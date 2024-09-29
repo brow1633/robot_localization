@@ -271,7 +271,7 @@ void RosFilter<T>::accelerationCallback(
       enqueueMeasurement(
         topic_name, measurement, measurement_covariance,
         update_vector_corrected,
-        callback_data.rejection_threshold_, msg->header.stamp);
+        callback_data.rejection_threshold_, callback_data.adaptive_covariance_threshold_, msg->header.stamp);
 
       RF_DEBUG(
         "Enqueued new measurement for " << topic_name <<
@@ -360,7 +360,7 @@ void RosFilter<T>::enqueueMeasurement(
   const std::string & topic_name, const Eigen::VectorXd & measurement,
   const Eigen::MatrixXd & measurement_covariance,
   const std::vector<bool> & update_vector, const double mahalanobis_thresh,
-  const rclcpp::Time & time)
+  const double adaptive_covariance_thresh, const rclcpp::Time & time)
 {
   MeasurementPtr meas = MeasurementPtr(new Measurement());
 
@@ -370,6 +370,7 @@ void RosFilter<T>::enqueueMeasurement(
   meas->update_vector_ = update_vector;
   meas->time_ = time;
   meas->mahalanobis_thresh_ = mahalanobis_thresh;
+  meas->adaptive_covariance_threshold_ = adaptive_covariance_thresh;
   meas->latest_control_ = latest_control_;
   meas->latest_control_time_ = latest_control_time_;
   measurement_queue_.push(meas);
@@ -1217,6 +1218,16 @@ void RosFilter<T>::loadParams()
         std::string("_twist_rejection_threshold"),
         std::numeric_limits<double>::max());
 
+      double pose_adaptive_covariance_thresh = this->declare_parameter(
+        odom_topic_name + 
+        std::string("_adaptive_pose_covariance_threshold"),
+        std::numeric_limits<double>::max());
+
+      double twist_adaptive_covariance_thresh = this->declare_parameter(
+        odom_topic_name + 
+        std::string("_adaptive_twist_covariance_threshold"),
+        std::numeric_limits<double>::max());
+
       // Set optional custom queue size
       int queue_size = this->declare_parameter(
         odom_topic_name +
@@ -1246,11 +1257,11 @@ void RosFilter<T>::loadParams()
 
       const CallbackData pose_callback_data(
         odom_topic_name + "_pose", pose_update_vec, var_shim_vec, pose_update_sum,
-        differential, relative, pose_use_child_frame, pose_mahalanobis_thresh);
+        differential, relative, pose_use_child_frame, pose_mahalanobis_thresh, pose_adaptive_covariance_thresh);
 
       const CallbackData twist_callback_data(
         odom_topic_name + "_twist", twist_update_vec, var_shim_vec, twist_update_sum, false,
-        false, false, twist_mahalanobis_thresh);
+        false, false, twist_mahalanobis_thresh, twist_adaptive_covariance_thresh);
 
       // Store the odometry topic subscribers so they don't go out of scope.
       if (pose_update_sum + twist_update_sum > 0) {
@@ -1366,6 +1377,11 @@ void RosFilter<T>::loadParams()
         std::string("_rejection_threshold"),
         std::numeric_limits<double>::max());
 
+      double pose_adaptive_covariance_thresh = this->declare_parameter(
+        pose_topic_name + 
+        std::string("_adaptive_pose_covariance_threshold"),
+        std::numeric_limits<double>::max());
+
       // Set optional custom queue size
       int queue_size = this->declare_parameter(
         pose_topic_name +
@@ -1391,7 +1407,7 @@ void RosFilter<T>::loadParams()
       if (pose_update_sum > 0) {
         const CallbackData callback_data(pose_topic_name, pose_update_vec,
           var_shim_vec, pose_update_sum, differential,
-          relative, false, pose_mahalanobis_thresh);
+          relative, false, pose_mahalanobis_thresh, pose_adaptive_covariance_thresh);
 
         std::function<void(const std::shared_ptr<
             geometry_msgs::msg::PoseWithCovarianceStamped>)>
@@ -1469,6 +1485,11 @@ void RosFilter<T>::loadParams()
         std::string("_rejection_threshold"),
         std::numeric_limits<double>::max());
 
+      double twist_adaptive_covariance_thresh = this->declare_parameter(
+        twist_topic_name + 
+        std::string("_adaptive_twist_covariance_threshold"),
+        std::numeric_limits<double>::max());
+
       // Set optional custom queue size
       int queue_size = this->declare_parameter(
         twist_topic_name +
@@ -1490,7 +1511,7 @@ void RosFilter<T>::loadParams()
       if (twist_update_sum > 0) {
         const CallbackData callback_data(twist_topic_name, twist_update_vec,
           var_shim_vec, twist_update_sum, false, false, false,
-          twist_mahalanobis_thresh);
+          twist_mahalanobis_thresh, twist_adaptive_covariance_thresh);
 
         std::function<void(const std::shared_ptr<
             geometry_msgs::msg::TwistWithCovarianceStamped>)>
@@ -1567,6 +1588,11 @@ void RosFilter<T>::loadParams()
         imu_topic_name +
         std::string("_pose_rejection_threshold"),
         std::numeric_limits<double>::max());
+      
+      double pose_adaptive_covariance_thresh = this->declare_parameter(
+        imu_topic_name + 
+        std::string("_adaptive_pose_covariance_threshold"),
+        std::numeric_limits<double>::max());
 
       // Check for angular velocity rejection threshold
       std::string imu_twist_rejection_name =
@@ -1575,10 +1601,20 @@ void RosFilter<T>::loadParams()
         imu_twist_rejection_name,
         std::numeric_limits<double>::max());
 
+      double twist_adaptive_covariance_thresh = this->declare_parameter(
+        imu_topic_name + 
+        std::string("_adaptive_twist_covariance_threshold"),
+        std::numeric_limits<double>::max());
+
       // Check for acceleration rejection threshold
       double accel_mahalanobis_thresh = this->declare_parameter(
         imu_topic_name +
         std::string("_linear_acceleration_rejection_threshold"),
+        std::numeric_limits<double>::max());
+
+      double accel_adaptive_covariance_thresh = this->declare_parameter(
+        imu_topic_name + 
+        std::string("_adaptive_linear_acceleration_covariance_threshold"),
         std::numeric_limits<double>::max());
 
       bool remove_grav_acc = this->declare_parameter(
@@ -1696,13 +1732,13 @@ void RosFilter<T>::loadParams()
       if (pose_update_sum + twist_update_sum + accelUpdateSum > 0) {
         const CallbackData pose_callback_data(
           imu_topic_name + "_pose", pose_update_vec, var_shim_vec, pose_update_sum,
-          differential, relative, false, pose_mahalanobis_thresh);
+          differential, relative, false, pose_mahalanobis_thresh, pose_adaptive_covariance_thresh);
         const CallbackData twist_callback_data(
           imu_topic_name + "_twist", twist_update_vec, var_shim_vec, twist_update_sum,
-          differential, relative, false, twist_mahalanobis_thresh);
+          differential, relative, false, twist_mahalanobis_thresh, twist_adaptive_covariance_thresh);
         const CallbackData accel_callback_data(
           imu_topic_name + "_acceleration", accel_update_vec, var_shim_vec, accelUpdateSum,
-          differential, relative, false, accel_mahalanobis_thresh);
+          differential, relative, false, accel_mahalanobis_thresh, accel_adaptive_covariance_thresh);
 
         std::function<void(const std::shared_ptr<sensor_msgs::msg::Imu>)>
         imu_callback =
@@ -2009,7 +2045,7 @@ void RosFilter<T>::poseCallback(
       enqueueMeasurement(
         topic_name, measurement, measurement_covariance,
         update_vector_corrected,
-        callback_data.rejection_threshold_, msg->header.stamp);
+        callback_data.rejection_threshold_, callback_data.adaptive_covariance_threshold_, msg->header.stamp);
 
       RF_DEBUG("Enqueued new measurement for " << topic_name << "\n");
     } else {
@@ -2450,7 +2486,7 @@ void RosFilter<T>::twistCallback(
       enqueueMeasurement(
         topic_name, measurement, measurement_covariance,
         update_vector_corrected,
-        callback_data.rejection_threshold_, msg->header.stamp);
+        callback_data.rejection_threshold_, callback_data.adaptive_covariance_threshold_, msg->header.stamp);
 
       RF_DEBUG("Enqueued new measurement for " << topic_name << "_twist\n");
     } else {
@@ -2741,9 +2777,8 @@ bool RosFilter<T>::prepareAcceleration(
           state(StateMemberPitch),
           state(StateMemberYaw));
 
-        // transform state orientation to IMU frame
-        trans.setBasis(stateTmp * target_frame_trans.getBasis());
-        rotNorm = trans.getBasis().inverse() * normAcc;
+        // transform state orientation to target frame
+        rotNorm = stateTmp.inverse() * normAcc;
       } else {
         tf2::Quaternion curAttitude;
         tf2::fromMsg(msg->orientation, curAttitude);
@@ -2756,14 +2791,20 @@ bool RosFilter<T>::prepareAcceleration(
         trans.setRotation(curAttitude);
         if (!relative) {
           // curAttitude is the true world-frame attitude of the sensor
-          rotNorm = trans.getBasis().inverse() * normAcc;
+          rotNorm = target_frame_trans.getBasis() *
+                    (trans.getBasis().inverse() * normAcc);
         } else {
           // curAttitude is relative to the initial pose of the sensor.
-          // Assumption: IMU sensor is rigidly attached to the base_link
-          // (but a static rotation is possible).
-          rotNorm = target_frame_trans.getBasis().inverse() * trans.getBasis().inverse() * normAcc;
+          // Assumption 1: IMU sensor is rigidly attached to the
+          // target_frame (base_link) (but a static rotation is possible).
+          // Assumption 2: the initial pose of target_frame (base_link)
+          // is upright.
+          rotNorm = target_frame_trans.getBasis() *
+                      (trans.getBasis().inverse() *
+                      (target_frame_trans.getBasis().inverse() * normAcc));
         }
       }
+      // Note that acc_tmp and rotNorm are both in target_frame
       acc_tmp.setX(acc_tmp.getX() - rotNorm.getX());
       acc_tmp.setY(acc_tmp.getY() - rotNorm.getY());
       acc_tmp.setZ(acc_tmp.getZ() - rotNorm.getZ());
